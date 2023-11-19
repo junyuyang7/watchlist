@@ -1,4 +1,4 @@
-from flask import Flask, url_for, render_template
+from flask import Flask, url_for, render_template, redirect, flash, request
 from markupsafe import escape
 from flask_sqlalchemy import SQLAlchemy  # 导入扩展类
 import os
@@ -18,6 +18,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False  # 关闭对模型修改的
 db = SQLAlchemy(app)  # 初始化扩展，传入程序实例 app
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.root_path, 'data.db')
+app.config['SECRET_KEY'] = 'dev'
 
 # 创建自定义命令 forge
 @app.cli.command()
@@ -60,6 +61,12 @@ class Movie(db.Model):  # 表名将会是 movie
     title = db.Column(db.String(60))  # 电影标题
     year = db.Column(db.String(4))  # 电影年份
     
+# 模板上下文处理函数
+@app.context_processor
+def inject_user():  # 函数名可以随意修改
+    user = User.query.first()
+    return dict(user=user)  # 需要返回字典，等同于 return {'user': user}
+
 
 # 自定义命令 initdb
 @app.cli.command()  # 注册为命令，可以传入 name 参数来自定义命令
@@ -72,15 +79,32 @@ def initdb(drop):
     click.echo('Initialized database.')  # 输出提示信息
 
 
-@app.route('/')
+# 创建条目
+@app.route('/', methods=['GET', 'POST'])
 def index():
-    user = User.query.first()  # 读取用户记录
-    movies = Movie.query.all()  # 读取所有电影记录
-    return render_template('index.html', user=user, movies=movies)
+    if request.method == 'POST':  # 判断是否是 POST 请求
+        # 获取表单数据
+        title = request.form.get('title')  # 传入表单对应输入字段的 name 值
+        year = request.form.get('year')
+        # 验证数据
+        if not title or not year or len(year) > 4 or len(title) > 60:
+            flash('Invalid input.')  # 显示错误提示
+            return redirect(url_for('index'))  # 重定向回主页
+        # 保存表单数据到数据库
+        movie = Movie(title=title, year=year)  # 创建记录
+        db.session.add(movie)  # 添加到数据库会话
+        db.session.commit()  # 提交数据库会话
+        flash('Item created.')  # 显示成功创建的提示
+        return redirect(url_for('index'))  # 重定向回主页
+
+    movies = Movie.query.all()
+    return render_template('index.html', movies=movies)
+
 
 @app.route('/user/<name>')
 def user_page(name):
     return f'<h1>User: {escape(name)}</h1><img src="https://th.bing.com/th/id/OIP.JuSM25g1b2eEYu-2KbGpVwHaHI?rs=1&pid=ImgDetMain">' 
+
 
 @app.route('/test')
 def test_url_for():
@@ -93,5 +117,41 @@ def test_url_for():
     # 下面这个调用传入了多余的关键字参数，它们会被作为查询字符串附加到 URL 后面。
     print(url_for('test_url_for', num=2))  # 输出：/test?num=2
     return 'Test page'
+
+
+@app.errorhandler(404)  # 传入要处理的错误代码
+def page_not_found(e):  # 接受异常对象作为参数
+    user = User.query.first()
+    return render_template('404.html', user=user), 404  # 返回模板和状态码
+
+# 编辑条目
+@app.route('/movie/edit/<int:movie_id>', methods=['GET', 'POST'])
+def edit(movie_id):
+    movie = Movie.query.get_or_404(movie_id)
+
+    if request.method == 'POST':  # 处理编辑表单的提交请求
+        title = request.form['title']
+        year = request.form['year']
+
+        if not title or not year or len(year) != 4 or len(title) > 60:
+            flash('Invalid input.')
+            return redirect(url_for('edit', movie_id=movie_id))  # 重定向回对应的编辑页面
+
+        movie.title = title  # 更新标题
+        movie.year = year  # 更新年份
+        db.session.commit()  # 提交数据库会话
+        flash('Item updated.')
+        return redirect(url_for('index'))  # 重定向回主页
+
+    return render_template('edit.html', movie=movie)  # 传入被编辑的电影记录
+
+# 删除条目
+@app.route('/movie/delete/<int:movie_id>', methods=['POST'])  # 限定只接受 POST 请求
+def delete(movie_id):
+    movie = Movie.query.get_or_404(movie_id)  # 获取电影记录
+    db.session.delete(movie)  # 删除对应的记录
+    db.session.commit()  # 提交数据库会话
+    flash('Item deleted.')
+    return redirect(url_for('index'))  # 重定向回主页
 
 # MarkupSafe（Flask 的依赖之一）提供的 escape() 函数对 name 变量进行转义处理，比如把 < 转换成 &lt;
